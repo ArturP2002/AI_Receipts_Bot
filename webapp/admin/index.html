@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Админ-панель</title>
+  <base href="/admin/" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <button type="button" class="nav-toggle" id="navToggle" aria-label="Меню">☰</button>
+      <h1 class="title">CookAtlas Admin</h1>
+      <span class="pill" id="envPill">загрузка…</span>
+    </header>
+    <div class="layout">
+      <nav class="sidebar" id="sidebar">
+        <button type="button" class="nav-item active" data-route="dash">📊 Дашборд</button>
+        <button type="button" class="nav-item" data-route="users">👥 Пользователи</button>
+        <button type="button" class="nav-item" data-route="pay">⭐ Платежи</button>
+        <button type="button" class="nav-item" data-route="settings">⚙️ Настройки бота</button>
+        <button type="button" class="nav-item" data-route="ref">🎁 Рефералы</button>
+      </nav>
+      <main class="content" id="main"></main>
+    </div>
+    <div class="toast" id="toast" hidden></div>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>
