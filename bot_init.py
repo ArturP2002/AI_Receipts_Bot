@@ -8,6 +8,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 storage = MemoryStorage()
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher(storage=storage)  # Создаем переменную диспетчера tg-бота
