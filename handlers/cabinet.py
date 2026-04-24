@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
 
+import config
 from database import Recipe, UserSavedRecipe, ensure_user
 from services.effective_config import get_effective_config
 import keyboards

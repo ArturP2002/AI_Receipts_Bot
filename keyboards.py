@@ -45,6 +45,14 @@ def products_kind_kb():
     return b.as_markup()
 
 
+def allergy_conflict_kb():
+    b = InlineKeyboardBuilder()
+    b.add(types.InlineKeyboardButton(text="⚙️ Открыть настройки", callback_data="set_from:products"))
+    b.add(types.InlineKeyboardButton(text="🔁 Ввести продукты заново", callback_data="pr:retry"))
+    b.adjust(1)
+    return b.as_markup()
+
+
 def cook_method_main_kb():
     b = InlineKeyboardBuilder()
     mapping = [

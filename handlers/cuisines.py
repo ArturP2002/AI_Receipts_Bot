@@ -23,6 +23,10 @@ PAGE = 3
 logger = logging.getLogger(__name__)
 
 
+def _selected_cuisine_head(label: str | None) -> str:
+    return f"🌍 Выбрана кухня: {label}\n\n" if label else ""
+
+
 async def _present_cuisine_results(
     call: CallbackQuery,
     state: FSMContext,
@@ -145,7 +149,7 @@ async def cuisine_picked(call: CallbackQuery, state: FSMContext):
     await state.set_state(states.CuisinesFlow.cuisine_hub)
     desc = description_for_slug(slug, custom_fallback=texts.CUISINE_CUSTOM_FALLBACK)
     await call.message.edit_text(
-        f"{lab}\n{desc}\n\nЧто будем готовить?",
+        f"{_selected_cuisine_head(lab)}{lab}\n{desc}\n\nЧто будем готовить?",
         reply_markup=keyboards.cuisine_hub_kb(slug),
     )
     await call.answer()
@@ -166,7 +170,7 @@ async def cuisine_add_products(call: CallbackQuery, state: FSMContext):
     )
     await state.set_state(states.ProductsFlow.waiting_input)
     await call.message.edit_text(
-        f"{texts.ADD_PRODUCTS_PROMPT}\n\n🌍 Выбрана кухня: {lab}\nПодберу рецепты по продуктам в стиле этой кухни.",
+        f"{_selected_cuisine_head(lab)}{texts.ADD_PRODUCTS_PROMPT}\n\nПодберу рецепты по продуктам в стиле этой кухни.",
         reply_markup=keyboards.products_entry_kb(
             back_callback=f"cu:{slug}",
             back_text="🔙 Назад к кухне",
@@ -189,9 +193,13 @@ async def cuisine_popular(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cu_type:"))
 async def cuisine_type_menu(call: CallbackQuery, state: FSMContext):
     slug = call.data.split(":", 1)[1]
-    await state.update_data(cuisine_slug=slug, cuisine_display=label_for_slug(slug))
+    lab = label_for_slug(slug)
+    await state.update_data(cuisine_slug=slug, cuisine_display=lab)
     await state.set_state(states.CuisinesFlow.pick_meal_type)
-    await call.message.edit_text("🍽 Выбери тип блюда:", reply_markup=keyboards.dish_type_kb(slug))
+    await call.message.edit_text(
+        f"{_selected_cuisine_head(lab)}🍽 Выбери тип блюда:",
+        reply_markup=keyboards.dish_type_kb(slug),
+    )
     await call.answer()
 
 
@@ -209,7 +217,12 @@ async def cuisine_type_chosen(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cu_time:"))
 async def cuisine_time_menu(call: CallbackQuery, state: FSMContext):
     slug = call.data.split(":", 1)[1]
-    await call.message.edit_text("⏱ Выбери время:", reply_markup=keyboards.time_bucket_kb(slug))
+    data = await state.get_data()
+    lab = data.get("cuisine_display") or label_for_slug(slug)
+    await call.message.edit_text(
+        f"{_selected_cuisine_head(lab)}⏱ Выбери время:",
+        reply_markup=keyboards.time_bucket_kb(slug),
+    )
     await call.answer()
 
 
@@ -242,7 +255,7 @@ async def _send_cuisine_list(
     chunk_ids = [r.id for r in found][offset : offset + PAGE]
     chunk = [Recipe.get_by_id(i) for i in chunk_ids]
     lines = [f"• {r.title} — {r.time_minutes} мин" for r in chunk]
-    body = f"🍝 Подходящие рецепты ({lab}):\n\n" + "\n".join(lines)
+    body = f"{_selected_cuisine_head(lab)}🍝 Подходящие рецепты ({lab}):\n\n" + "\n".join(lines)
     if len(lines) < len(found):
         body += "\n\nЕсли хочешь уточнить предпочтения, нажми «Настроить рецепт»."
     show_more = offset + PAGE < len(found)
@@ -265,7 +278,7 @@ async def list_back_cuisine(call: CallbackQuery, state: FSMContext):
     lab = data.get("cuisine_display") or label_for_slug(slug)
     desc = description_for_slug(slug, custom_fallback=texts.CUISINE_CUSTOM_FALLBACK)
     await call.message.edit_text(
-        f"{lab}\n{desc}\n\nЧто будем готовить?",
+        f"{_selected_cuisine_head(lab)}{lab}\n{desc}\n\nЧто будем готовить?",
         reply_markup=keyboards.cuisine_hub_kb(slug),
     )
     await call.answer()
@@ -316,6 +329,6 @@ async def cuisine_search_text(message: Message, state: FSMContext):
     await state.update_data(cuisine_slug=slug, cuisine_display=lab)
     await state.set_state(states.CuisinesFlow.cuisine_hub)
     await message.answer(
-        f"{lab}\n{desc}\n\nЧто будем готовить?",
+        f"{_selected_cuisine_head(lab)}{lab}\n{desc}\n\nЧто будем готовить?",
         reply_markup=keyboards.cuisine_hub_kb(slug),
     )

@@ -873,7 +873,7 @@ async def settings_done_navigate(call: CallbackQuery, state: FSMContext):
         lab = data.get("cuisine_display") or label_for_slug(slug)
         desc = description_for_slug(slug, custom_fallback=texts.CUISINE_CUSTOM_FALLBACK)
         await call.message.edit_text(
-            f"{lab}\n{desc}\n\nЧто будем готовить?",
+            f"🌍 Выбрана кухня: {lab}\n\n{lab}\n{desc}\n\nЧто будем готовить?",
             reply_markup=keyboards.cuisine_hub_kb(slug),
         )
         return

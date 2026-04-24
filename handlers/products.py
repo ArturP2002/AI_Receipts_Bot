@@ -492,10 +492,13 @@ async def products_got_text(message: Message, state: FSMContext):
     conflicts = _allergy_conflicts_for_terms(user, terms)
     if conflicts:
         await message.answer(
-            "⚠️ alert: в списке есть продукты, которые у тебя отмечены как противопоказанные: "
+            "⚠️ В списке есть продукты, которые у тебя отмечены как противопоказанные: "
             + ", ".join(conflicts)
             + ".\n"
-            "Пожалуйста, убери их из ввода или обнови раздел «⚙️ Настроить рецепт → 🚫 Аллергии»."
+            "Убери их из списка и отправь продукты еще раз в этот чат — тогда я продолжу подбор.\n\n"
+            "Если ограничения изменились, открой «⚙️ Настроить рецепт → 🚫 Аллергии» и обнови список."
+            ,
+            reply_markup=keyboards.allergy_conflict_kb(),
         )
         return
 
