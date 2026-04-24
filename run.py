@@ -8,6 +8,7 @@ from aiogram import Dispatcher
 from database import init_database
 from handlers import register_all as _register_all
 from services.subscription import process_subscription_tick
+from services.daily_recipe import process_daily_recipe_tick
 from admin_app import start_admin_http_server, stop_admin_http_server
 
 
@@ -22,6 +23,17 @@ async def _subscription_worker() -> None:
             logger.warning("subscription_worker: %s", exc, exc_info=True)
 
 
+async def _daily_recipe_worker() -> None:
+    while True:
+        try:
+            await process_daily_recipe_tick(bot)
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("daily_recipe_worker: %s", exc, exc_info=True)
+
+
 async def run_bot() -> None:
     logger.info("Старт: проверка BOT_TOKEN…")
     validate_config()
@@ -33,6 +45,7 @@ async def run_bot() -> None:
     logger.info("Меню команд и кнопка «Меню» настроены")
 
     asyncio.create_task(_subscription_worker())
+    asyncio.create_task(_daily_recipe_worker())
 
     try:
         await start_admin_http_server(bot)

@@ -234,6 +234,7 @@ def settings_root_kb():
 
 def settings_done_kb():
     b = InlineKeyboardBuilder()
+    b.add(types.InlineKeyboardButton(text="🥕 Внести продукты", callback_data="add_products"))
     b.add(types.InlineKeyboardButton(text="🔙 Вернуться к настройкам", callback_data="st:root"))
     b.add(types.InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
     b.adjust(1)

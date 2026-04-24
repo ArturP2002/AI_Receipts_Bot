@@ -73,6 +73,16 @@ FREE_TITLE_API_TIMEOUT_SEC = max(0.5, _env_float("FREE_TITLE_API_TIMEOUT_SEC", 4
 # Раздел «кухни мира» — только генерация через OpenAI (база для подбора не используется).
 CUISINES_AI_MODE = "always"
 
+# Ежедневная рассылка «Рецепт дня» (время по Москве).
+_dr_enabled = os.getenv("DAILY_RECIPE_ENABLED", "on").strip().lower()
+DAILY_RECIPE_ENABLED = _dr_enabled not in ("0", "false", "no", "off")
+DAILY_RECIPE_HOUR_MSK = max(0, min(23, _env_int("DAILY_RECIPE_HOUR_MSK", 16)))
+DAILY_RECIPE_MINUTE_MSK = max(0, min(59, _env_int("DAILY_RECIPE_MINUTE_MSK", 0)))
+# Ширина окна, чтобы не пропустить отправку при рестарте/лагe процесса.
+DAILY_RECIPE_SEND_WINDOW_MINUTES = max(
+    1, min(20, _env_int("DAILY_RECIPE_SEND_WINDOW_MINUTES", 10))
+)
+
 
 def cuisine_ai_enabled() -> bool:
     """Можно вызывать ИИ для кухонного потока (нужен ключ)."""

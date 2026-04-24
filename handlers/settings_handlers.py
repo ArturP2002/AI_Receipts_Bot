@@ -900,6 +900,7 @@ async def settings_done_navigate(call: CallbackQuery, state: FSMContext):
             offset=offset,
             list_ctx="products",
             more_cb="pr:more",
+            cuisine_label=data.get("products_cuisine_display"),
         )
         return
     if ctx == "cuisine":

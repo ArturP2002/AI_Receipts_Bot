@@ -152,6 +152,182 @@ def _allergy_labels_for_prompt(raw: str) -> list[str]:
     return out
 
 
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _allergy_needles_map() -> dict[str, set[str]]:
+    return {
+        "nuts": {"nuts", "орех", "грец", "фундук", "арахис", "миндал"},
+        "seafood": {"seafood", "морепродукт", "креветк", "кальмар", "миди", "устриц"},
+        "eggs": {"egg", "яйц", "омлет"},
+        "gluten": {"gluten", "глютен", "пшениц", "мук", "ржан", "ячмен"},
+        "lactose": {"lactose", "молок", "сыр", "сливк", "творог", "йогурт", "сметан"},
+        "citrus": {"цитрус", "лимон", "лайм", "апельсин", "грейпфрут"},
+        "tomatoes": {"томат", "помидор"},
+        "spicy": {"остр", "чили", "кайенн", "халапеньо"},
+        "mushrooms": {"гриб", "шампиньон", "вешенк", "лисич"},
+    }
+
+
+def _item_blob(item: dict) -> str:
+    parts: list[str] = []
+    for k in ("title", "short_description"):
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v.strip())
+    for k in ("ingredients", "tags", "restrictions"):
+        v = item.get(k)
+        if isinstance(v, list):
+            parts.extend(str(x) for x in v if str(x).strip())
+    return _norm_text(" ".join(parts))
+
+
+def _catalog_allergy_keys_from_user(user: UsersData) -> set[str]:
+    keys: set[str] = set()
+    for x in _json_list(user.allergies_strict_json):
+        if isinstance(x, str) and x in ALLERGY_CATALOG_KEYS:
+            keys.add(x)
+    return keys
+
+
+def _custom_allergy_labels_from_user(user: UsersData) -> list[str]:
+    out: list[str] = []
+    for x in _json_list(user.allergies_strict_json):
+        if isinstance(x, dict) and x.get("type") == ALLERGY_CUSTOM_TYPE:
+            lab = str(x.get("l") or "").strip()
+            if lab:
+                out.append(lab)
+    return out
+
+
+def _item_passes_user_hard_constraints(
+    item: dict,
+    user: UsersData,
+    *,
+    force_cook_method: str | None = None,
+    force_dish_type: str | None = None,
+    force_time_bucket: str | None = None,
+) -> tuple[bool, str]:
+    blob = _item_blob(item)
+    needles_map = _allergy_needles_map()
+    allergy_keys = _catalog_allergy_keys_from_user(user)
+    fitness = set(_json_list_strs(user.fitness_prefs_json))
+    if "gluten_free" in fitness:
+        allergy_keys.add("gluten")
+
+    for key in allergy_keys:
+        for n in needles_map.get(key, set()):
+            if n in blob:
+                return False, f"allergy:{key}"
+
+    for lab in _custom_allergy_labels_from_user(user):
+        checks = [_norm_text(lab)]
+        checks.extend(_norm_text(w) for w in re.split(r"[\s,;]+", lab) if len(_norm_text(w)) >= 2)
+        for n in dict.fromkeys(checks):
+            if n and n in blob:
+                return False, f"custom_allergy:{lab}"
+
+    dp = _diet_profile_merged(user)
+    mode = dp.get("mode", "omnivore")
+    if mode == "vegan" and any(
+        x in blob
+        for x in (
+            "мясо",
+            "куриц",
+            "говядин",
+            "свинин",
+            "индейк",
+            "утк",
+            "рыба",
+            "лосос",
+            "треск",
+            "кревет",
+            "молок",
+            "сыр",
+            "сливк",
+            "яйц",
+            "творог",
+            "мёд",
+        )
+    ):
+        return False, "diet:vegan"
+    if mode == "vegetarian" and any(
+        x in blob for x in ("мясо", "куриц", "говядин", "свинин", "индейк", "утк", "рыба", "лосос", "треск", "кревет")
+    ):
+        return False, "diet:vegetarian"
+    if mode == "pescatarian" and any(x in blob for x in ("мясо", "куриц", "говядин", "свинин", "индейк", "утк")):
+        return False, "diet:pescatarian"
+    if dp.get("no_eggs") and any(x in blob for x in ("яйц", "омлет", "айоли")):
+        return False, "diet:no_eggs"
+    if dp.get("no_dairy") and any(x in blob for x in ("молок", "сыр", "сливк", "творог", "йогурт", "сметан", "масло слив")):
+        return False, "diet:no_dairy"
+
+    if getattr(user, "halal_only", False) and any(
+        x in blob
+        for x in ("свинин", "бекон", "ветчин", "шпик", "сало", "колбас", "пиво", "вино", "коньяк", "ром ", "водка")
+    ):
+        return False, "halal"
+
+    cm = _norm_cook_method(str(item.get("cook_method") or force_cook_method or CookMethod.FRY.value))
+    if force_cook_method and cm != force_cook_method:
+        return False, "forced_method"
+    if "no_fried" in fitness and cm in (CookMethod.FRY.value, CookMethod.DEEP_FRY.value):
+        return False, "fitness:no_fried"
+    if force_cook_method and not _matches_cook_method(item, force_cook_method):
+        return False, "method_conflict"
+
+    allowed_diff = [x for x in _json_list_strs(user.allowed_difficulties_json) if x in _VALID_DIFFICULTIES]
+    diff = _norm_difficulty(str(item.get("difficulty") or ""))
+    if allowed_diff and diff not in allowed_diff:
+        return False, "difficulty"
+
+    dish_type = _norm_dish_type(str(item.get("dish_type") or ""))
+    if force_dish_type and dish_type != force_dish_type:
+        return False, "forced_dish_type"
+    if force_time_bucket == "fast":
+        if int(item.get("time_minutes") or 0) > 15:
+            return False, "time_bucket"
+    elif force_time_bucket == "medium":
+        tm = int(item.get("time_minutes") or 0)
+        if tm <= 15 or tm > 45:
+            return False, "time_bucket"
+    elif force_time_bucket == "long":
+        if int(item.get("time_minutes") or 0) <= 45:
+            return False, "time_bucket"
+
+    if user.max_time_minutes and user.time_strict:
+        if int(item.get("time_minutes") or 0) > user.max_time_minutes:
+            return False, "max_time_strict"
+
+    return True, ""
+
+
+def _apply_user_constraints_filter(
+    items: list[dict],
+    user: UsersData,
+    *,
+    force_cook_method: str | None = None,
+    force_dish_type: str | None = None,
+    force_time_bucket: str | None = None,
+) -> tuple[list[dict], list[str]]:
+    ok: list[dict] = []
+    violations: list[str] = []
+    for idx, item in enumerate(items, start=1):
+        passed, reason = _item_passes_user_hard_constraints(
+            item,
+            user,
+            force_cook_method=force_cook_method,
+            force_dish_type=force_dish_type,
+            force_time_bucket=force_time_bucket,
+        )
+        if passed:
+            ok.append(item)
+        else:
+            violations.append(f"recipe#{idx}:{reason}")
+    return ok, violations
+
+
 def _user_constraints_block(
     user: UsersData,
     *,
@@ -1365,6 +1541,16 @@ async def generate_recipes_for_cuisine(
     raw_list = data.get("recipes")
     if not isinstance(raw_list, list) or not raw_list:
         raise ValueError("пустой ответ recipes")
+    checked, violations = _self_check_items_relaxed(raw_list, CookMethod.OTHER.value)
+    filtered, hard_violations = _apply_user_constraints_filter(
+        checked,
+        user,
+        force_dish_type=dish_type,
+        force_time_bucket=time_bucket,
+    )
+    raw_list = filtered[:n]
+    if not raw_list:
+        raise ValueError("все recipes нарушают ограничения: " + "; ".join((violations + hard_violations)[:8]))
     await _refine_recipe_titles_with_llm([x for x in raw_list[:n] if isinstance(x, dict)])
     model_tag = config.OPENAI_CHAT_MODEL
     default_cm = CookMethod.FRY.value
@@ -1451,6 +1637,18 @@ async def generate_and_persist_by_dish_name(
     if not isinstance(raw_list, list) or not raw_list:
         raise ValueError("пустой/недостаточный ответ recipes") from last_exc
 
+    checked, violations = _self_check_items_relaxed(raw_list, forced_cook_method or CookMethod.OTHER.value)
+    filtered, hard_violations = _apply_user_constraints_filter(
+        checked,
+        user,
+        force_cook_method=forced_cook_method,
+    )
+    if len(filtered) < min_n:
+        raise ValueError(
+            "недостаточно recipes после фильтрации: "
+            + "; ".join((violations + hard_violations)[:10])
+        )
+    raw_list = filtered
     await _refine_recipe_titles_with_llm([x for x in raw_list[:n] if isinstance(x, dict)])
     cuisine = cuisine_slug or _cuisine_slug(user)
     model_tag = config.OPENAI_CHAT_MODEL
@@ -1751,6 +1949,12 @@ async def generate_and_persist_recipes(
             violations = ["empty:recipes"]
             continue
         checked, violations = _self_check_items(raw_list, terms, cook_method)
+        checked, hard_violations = _apply_user_constraints_filter(
+            checked,
+            user,
+            force_cook_method=cook_method,
+        )
+        violations.extend(hard_violations)
         if checked:
             final_items = checked
             break
@@ -1784,6 +1988,13 @@ async def generate_and_persist_recipes(
             exists = any(str(x.get("title") or "").strip().lower() == title_key for x in final_items)
             if not exists:
                 final_items.append(item)
+    final_items, hard_violations = _apply_user_constraints_filter(
+        final_items,
+        user,
+        force_cook_method=cook_method,
+    )
+    if not final_items and hard_violations:
+        raise ValueError("все recipes нарушили ограничения: " + "; ".join(hard_violations[:10]))
     if not final_items:
         raise ValueError("self-check: не удалось получить валидные рецепты")
     await _refine_recipe_titles_with_llm([x for x in final_items[:max_n] if isinstance(x, dict)])

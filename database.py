@@ -155,6 +155,7 @@ class BotRuntimeSettings(BaseModelData):
     subscription_default_days = IntegerField()
     free_show_more_count = IntegerField()
     referral_bonus_opens = IntegerField()
+    daily_recipe_last_sent_date = CharField(max_length=10, null=True)
     updated_at = DateTimeField(default=datetime.utcnow)
 
     class Meta:
@@ -236,7 +237,15 @@ def ensure_bot_runtime_settings_row() -> None:
         subscription_default_days=_cfg.SUBSCRIPTION_DEFAULT_DAYS,
         free_show_more_count=_cfg.FREE_SHOW_MORE_COUNT,
         referral_bonus_opens=_cfg.REFERRAL_BONUS_OPENS,
+        daily_recipe_last_sent_date=None,
     )
+
+
+def migrate_runtime_settings_schema() -> None:
+    cursor = db.execute_sql("PRAGMA table_info(bot_runtime_settings)")
+    existing = {row[1] for row in cursor.fetchall()}
+    if "daily_recipe_last_sent_date" not in existing:
+        db.execute_sql("ALTER TABLE bot_runtime_settings ADD COLUMN daily_recipe_last_sent_date VARCHAR(10)")
 
 
 def init_database():
@@ -245,6 +254,7 @@ def init_database():
     create_tables()
     migrate_users_schema()
     migrate_recipes_schema()
+    migrate_runtime_settings_schema()
     ensure_bot_runtime_settings_row()
 
 

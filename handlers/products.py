@@ -10,6 +10,7 @@ from enums import CookMethod, cook_method_label_ru
 import keyboards
 from services import limits, search
 from services import openai_ai, recipe_openai
+from settings_catalog import ALLERGY_CATALOG_KEYS, ALLERGY_CUSTOM_TYPE
 import states
 import texts
 from tg_safe_edit import safe_delete_message
@@ -226,6 +227,52 @@ def _extra_products_hint(terms: list[str], method: str) -> str:
     return f"💡 Сейчас получился только 1 рецепт. Добавь, например: {', '.join(add)} — и я попробую подобрать ещё 1-2 варианта."
 
 
+def _json_list(raw: str) -> list:
+    try:
+        import json
+
+        v = json.loads(raw or "[]")
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def _allergy_conflicts_for_terms(user, terms: list[str]) -> list[str]:
+    allergy_needles = {
+        "nuts": ("орехи", ("орех", "грец", "арахис", "фундук", "миндал")),
+        "seafood": ("морепродукты", ("морепродукт", "кревет", "кальмар", "миди", "устриц")),
+        "eggs": ("яйца", ("яйц", "омлет")),
+        "gluten": ("глютен", ("глютен", "пшениц", "мук", "ржан", "ячмен")),
+        "lactose": ("лактоза", ("молок", "сыр", "сливк", "творог", "йогурт", "сметан")),
+        "citrus": ("цитрусовые", ("цитрус", "лимон", "лайм", "апельсин", "грейпфрут")),
+        "tomatoes": ("томаты", ("томат", "помидор")),
+        "spicy": ("острое", ("чили", "кайенн", "халапеньо", "остр")),
+        "mushrooms": ("грибы", ("гриб", "шампиньон", "вешенк", "лисич")),
+    }
+    terms_norm = [t.strip().lower() for t in terms if t.strip()]
+    if not terms_norm:
+        return []
+    selected_catalog = {
+        x for x in _json_list(getattr(user, "allergies_strict_json", "[]")) if isinstance(x, str) and x in ALLERGY_CATALOG_KEYS
+    }
+    custom_items = [
+        (x.get("l") or "").strip().lower()
+        for x in _json_list(getattr(user, "allergies_strict_json", "[]"))
+        if isinstance(x, dict) and x.get("type") == ALLERGY_CUSTOM_TYPE and (x.get("l") or "").strip()
+    ]
+    conflicts: list[str] = []
+    for key in selected_catalog:
+        ru_label, needles = allergy_needles.get(key, (key, (key,)))
+        if any(any(n in term for n in needles) for term in terms_norm):
+            conflicts.append(ru_label)
+    for custom in custom_items:
+        pieces = [custom] + [p for p in re.split(r"[\s,;]+", custom) if len(p) >= 2]
+        if any(any(p in term for p in pieces) for term in terms_norm):
+            conflicts.append(custom)
+    # dedupe with order
+    return list(dict.fromkeys(conflicts))
+
+
 async def _go_choose_method(message: Message, state: FSMContext, user_text: str, cuisine_label: str | None) -> None:
     user = ensure_user(message.from_user.id)
     limits.append_search_history(user, user_text, "products")
@@ -239,6 +286,9 @@ async def _go_choose_method(message: Message, state: FSMContext, user_text: str,
 
 async def _go_dish_query(message: Message, state: FSMContext, query_text: str) -> None:
     user = ensure_user(message.from_user.id)
+    flow_data = await state.get_data()
+    cuisine_slug = flow_data.get("products_cuisine_slug")
+    cuisine_label = flow_data.get("products_cuisine_display")
     limits.append_search_history(user, query_text, "dish_query")
     if search.is_query_too_vague_for_dish_search(query_text):
         await message.answer(texts.DISH_QUERY_CLARIFY, reply_markup=keyboards.dish_query_clarify_kb())
@@ -260,7 +310,11 @@ async def _go_dish_query(message: Message, state: FSMContext, query_text: str) -
                     pass
 
         found = await recipe_openai.generate_and_persist_by_dish_name(
-            user, query_text, progress=_progress
+            user,
+            query_text,
+            progress=_progress,
+            cuisine_slug=cuisine_slug,
+            cuisine_theme=cuisine_label,
         )
     except Exception:
         if thinking_msg:
@@ -296,6 +350,7 @@ async def _go_dish_query(message: Message, state: FSMContext, query_text: str) -
         offset=0,
         list_ctx="products",
         more_cb="pr:more",
+        cuisine_label=cuisine_label,
     )
 
 
@@ -356,6 +411,7 @@ async def _send_dish_query_results(
     offset: int,
     list_ctx: str,
     more_cb: str,
+    cuisine_label: str | None = None,
 ):
     chunk = recipes[offset : offset + PAGE]
     if not chunk:
@@ -366,7 +422,10 @@ async def _send_dish_query_results(
         )
         return
     safe_q = (query_display or "").replace("«", "").replace("»", "").strip() or "запрос"
-    head = f"Есть варианты по запросу «{safe_q}»:\n\n"
+    head = f"Есть варианты по запросу «{safe_q}»:\n"
+    if cuisine_label:
+        head += f"🌍 Кухня: {cuisine_label}\n"
+    head += "\n"
     lines = [f"{i + 1 + offset}. {r.title} — {r.time_minutes} мин" for i, r in enumerate(chunk)]
     body = head + "\n".join(lines) + "\n\nНажми на рецепт, чтобы открыть карточку."
     extras = []
@@ -425,9 +484,19 @@ async def products_got_text(message: Message, state: FSMContext):
         await message.answer("Напиши хотя бы один продукт — через запятую или через пробел.")
         return
 
+    user = ensure_user(message.from_user.id)
     terms = _product_terms_from_text(text)
     if not terms:
         await message.answer("Напиши хотя бы один продукт — через запятую или через пробел.")
+        return
+    conflicts = _allergy_conflicts_for_terms(user, terms)
+    if conflicts:
+        await message.answer(
+            "⚠️ alert: в списке есть продукты, которые у тебя отмечены как противопоказанные: "
+            + ", ".join(conflicts)
+            + ".\n"
+            "Пожалуйста, убери их из ввода или обнови раздел «⚙️ Настроить рецепт → 🚫 Аллергии»."
+        )
         return
 
     # В режиме выбранной кухни — всегда трактуем как продукты.
@@ -634,6 +703,7 @@ async def products_show_more(call: CallbackQuery, state: FSMContext):
             offset=offset,
             list_ctx="products",
             more_cb="pr:more",
+            cuisine_label=cuisine_label,
         )
     else:
         label = cook_method_label_ru(method) if method else "подбор"
