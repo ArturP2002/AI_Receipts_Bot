@@ -46,6 +46,21 @@ _DIFFICULTY_KEY_TO_LABEL = dict(DIFFICULTY_OPTIONS)
 _BUDGET_KEY_TO_LABEL = dict(BUDGET_OPTIONS)
 
 
+async def _settings_cuisine_prefix(state: FSMContext) -> str:
+    data = await state.get_data()
+    ctx = data.get("settings_back_ctx")
+    if ctx not in {"cuisine_hub", "cuisine"}:
+        return ""
+    lab = (data.get("cuisine_display") or "").strip()
+    if not lab:
+        return ""
+    return f"🌍 Выбрана кухня: {lab}\n\n"
+
+
+async def _with_settings_cuisine_prefix(state: FSMContext, body: str) -> str:
+    return f"{await _settings_cuisine_prefix(state)}{body}"
+
+
 def _dietetic_summary_ru(keys: list[str]) -> str:
     if not keys:
         return "не выбраны"
@@ -118,10 +133,11 @@ def _diet_kb(d: dict):
 
 async def enter_settings(message: Message, state: FSMContext, *, edit: bool = False) -> None:
     await state.set_state(states.SettingsFlow.root)
+    body = await _with_settings_cuisine_prefix(state, texts.SETTINGS_MAIN)
     if edit:
-        await message.edit_text(texts.SETTINGS_MAIN, reply_markup=keyboards.settings_root_kb())
+        await message.edit_text(body, reply_markup=keyboards.settings_root_kb())
     else:
-        await message.answer(texts.SETTINGS_MAIN, reply_markup=keyboards.settings_root_kb())
+        await message.answer(body, reply_markup=keyboards.settings_root_kb())
 
 
 @router.callback_query(F.data == "st:root")
@@ -293,9 +309,12 @@ async def settings_cuisine_toggle(call: CallbackQuery, state: FSMContext):
 async def settings_cuisines_done(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     cur = _loads(user.favorite_cuisines_json)
-    await call.message.edit_text(
+    body = (
         f"✅ Выбрано: {summary_labels_favorites(cur)}\n"
-        f"Теперь эти кухни — в приоритете в выдаче.",
+        f"Теперь эти кухни — в приоритете в выдаче."
+    )
+    await call.message.edit_text(
+        await _with_settings_cuisine_prefix(state, body),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
@@ -324,8 +343,9 @@ async def settings_diet_veg_actions(call: CallbackQuery, state: FSMContext):
     action = parts[1] if len(parts) > 1 else ""
     if action == "done":
         _save_diet(user, d)
+        body = f"✅ Режим: {d.get('mode')}, без яиц: {d.get('no_eggs')}, без молочного: {d.get('no_dairy')}"
         await call.message.edit_text(
-            f"✅ Режим: {d.get('mode')}, без яиц: {d.get('no_eggs')}, без молочного: {d.get('no_dairy')}",
+            await _with_settings_cuisine_prefix(state, body),
             reply_markup=keyboards.settings_done_kb(),
         )
         await call.answer()
@@ -399,8 +419,9 @@ async def settings_dietetic_toggle(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     if key == "done":
         cur = _loads(user.dietetic_tables_json)
+        body = f"✅ Учтены столы: {_dietetic_summary_ru(cur)}"
         await call.message.edit_text(
-            f"✅ Учтены столы: {_dietetic_summary_ru(cur)}",
+            await _with_settings_cuisine_prefix(state, body),
             reply_markup=keyboards.settings_done_kb(),
         )
         await call.answer()
@@ -605,8 +626,9 @@ def _allergy_summary_labels(cur: list) -> str:
 async def settings_all_done(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     cur = _loads(user.allergies_strict_json)
+    body = f"✅ Исключаю из выдачи: {_allergy_summary_labels(cur)}"
     await call.message.edit_text(
-        f"✅ Исключаю из выдачи: {_allergy_summary_labels(cur)}",
+        await _with_settings_cuisine_prefix(state, body),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
@@ -652,8 +674,9 @@ async def settings_fitness_toggle(call: CallbackQuery, state: FSMContext):
 async def settings_fitness_done(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     cur = _loads(user.fitness_prefs_json)
+    body = f"✅ ЗОЖ: {', '.join(cur) or 'без ограничений'}"
     await call.message.edit_text(
-        f"✅ ЗОЖ: {', '.join(cur) or 'без ограничений'}",
+        await _with_settings_cuisine_prefix(state, body),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
@@ -685,7 +708,7 @@ async def settings_time_pick(call: CallbackQuery, state: FSMContext):
     user.max_time_minutes = None if v == 0 else v
     user.save()
     await call.message.edit_text(
-        texts.SETTINGS_SAVED,
+        await _with_settings_cuisine_prefix(state, texts.SETTINGS_SAVED),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
@@ -734,7 +757,10 @@ async def settings_dt_toggle(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "st:dt_done")
 async def settings_dt_done(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text(texts.SETTINGS_SAVED, reply_markup=keyboards.settings_done_kb())
+    await call.message.edit_text(
+        await _with_settings_cuisine_prefix(state, texts.SETTINGS_SAVED),
+        reply_markup=keyboards.settings_done_kb(),
+    )
     await call.answer()
 
 
@@ -778,8 +804,9 @@ async def settings_cookpref_done(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     cur = _loads(user.preferred_cook_methods_json)
     labels = [cook_method_label_ru(x) for x in cur if isinstance(x, str)]
+    body = f"✅ Способы: {', '.join(labels) or 'любые'}"
     await call.message.edit_text(
-        f"✅ Способы: {', '.join(labels) or 'любые'}",
+        await _with_settings_cuisine_prefix(state, body),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
@@ -847,8 +874,9 @@ async def settings_diff_done(call: CallbackQuery, state: FSMContext):
     user = ensure_user(call.from_user.id)
     d = _loads(user.allowed_difficulties_json)
     bt = user.budget_tier or "any"
+    body = f"✅ Сложность: {_difficulty_summary_ru(d)}; бюджет: {_budget_summary_ru(user.budget_tier)}"
     await call.message.edit_text(
-        f"✅ Сложность: {_difficulty_summary_ru(d)}; бюджет: {_budget_summary_ru(user.budget_tier)}",
+        await _with_settings_cuisine_prefix(state, body),
         reply_markup=keyboards.settings_done_kb(),
     )
     await call.answer()
