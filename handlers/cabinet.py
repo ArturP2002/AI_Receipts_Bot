@@ -11,7 +11,7 @@ import keyboards
 from services.subscription import format_subscription_date, is_subscription_active
 import states
 import texts
-from tg_safe_edit import safe_edit_text
+from tg_safe_edit import safe_delete_message, safe_edit_text
 
 router = Router()
 
@@ -36,7 +36,9 @@ async def show_cabinet(message: Message, state: FSMContext, *, edit: bool = Fals
 
 @router.callback_query(F.data == "cabinet")
 async def cabinet_entry(call: CallbackQuery, state: FSMContext):
-    await show_cabinet(call.message, state, edit=True)
+    # Вход из главного меню может быть из фото-сообщения, его нельзя редактировать как text.
+    await safe_delete_message(call.message)
+    await show_cabinet(call.message, state, edit=False)
     await call.answer()
 
 

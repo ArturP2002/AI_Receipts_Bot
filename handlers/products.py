@@ -457,7 +457,10 @@ async def add_products_entry(call: CallbackQuery, state: FSMContext):
         products_back_callback="main_menu",
         products_back_text="🔙 Назад",
     )
-    await render_products_waiting_screen(call.message, edit=True)
+    # Держим чат чистым: убираем карточку главного меню перед следующим экраном.
+    await safe_delete_message(call.message)
+    # Главное меню приходит фото+caption; edit_text для него недоступен.
+    await render_products_waiting_screen(call.message, edit=False)
     await call.answer()
 
 

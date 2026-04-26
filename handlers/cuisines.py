@@ -121,7 +121,9 @@ async def cuisine_open_text_input(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "world_cuisines")
 async def world_cuisines(call: CallbackQuery, state: FSMContext):
     await state.set_state(states.CuisinesFlow.pick_cuisine)
-    await call.message.edit_text(texts.CUISINES_CHOOSE, reply_markup=keyboards.cuisines_popular_kb())
+    await safe_delete_message(call.message)
+    # Вход из главного меню может быть из фото-сообщения, его нельзя редактировать как text.
+    await call.message.answer(texts.CUISINES_CHOOSE, reply_markup=keyboards.cuisines_popular_kb())
     await call.answer()
 
 
