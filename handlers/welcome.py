@@ -1,10 +1,13 @@
 import asyncio
 import re
+from contextlib import suppress
+from pathlib import Path
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from database import ensure_user
 from keyboards import start_kb
@@ -13,6 +16,7 @@ from services.referrals import link_referral_on_start
 import texts
 
 router = Router()
+MAIN_MENU_IMAGE = Path("MainMenuPhoto.jpg")
 
 
 def _parse_ref(start_arg: str | None) -> int | None:
@@ -38,18 +42,30 @@ async def cmd_start(message: Message, state: FSMContext):
         user.onboarding_shown = True
         user.save()
         await asyncio.sleep(5)
-    await message.answer(
-        texts.get_welcome_text(remaining_full_free_opens(user)),
-        reply_markup=start_kb(),
-    )
+    welcome_text = texts.get_welcome_text(remaining_full_free_opens(user))
+    if MAIN_MENU_IMAGE.exists():
+        await message.answer_photo(
+            photo=FSInputFile(str(MAIN_MENU_IMAGE)),
+            caption=welcome_text,
+            reply_markup=start_kb(),
+        )
+    else:
+        await message.answer(welcome_text, reply_markup=start_kb())
 
 
 @router.callback_query(F.data == "main_menu")
 async def main_menu_cb(call: CallbackQuery, state: FSMContext):
     await state.clear()
     user = ensure_user(call.from_user.id)
-    await call.message.edit_text(
-        texts.get_welcome_text(remaining_full_free_opens(user)),
-        reply_markup=start_kb(),
-    )
+    welcome_text = texts.get_welcome_text(remaining_full_free_opens(user))
+    with suppress(TelegramBadRequest):
+        await call.message.delete()
+    if MAIN_MENU_IMAGE.exists():
+        await call.message.answer_photo(
+            photo=FSInputFile(str(MAIN_MENU_IMAGE)),
+            caption=welcome_text,
+            reply_markup=start_kb(),
+        )
+    else:
+        await call.message.answer(welcome_text, reply_markup=start_kb())
     await call.answer()
