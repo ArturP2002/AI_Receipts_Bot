@@ -1,12 +1,16 @@
+import logging
+import re
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-import re
 
 import config
+from data.dish_markers import looks_like_dish_query_text, terms_look_like_dish_name_only
 from database import Recipe, ensure_user, get_user
 from enums import CookMethod, cook_method_label_ru
+from handlers import search_guard
 import keyboards
 from services import limits, search
 from services import openai_ai, recipe_openai
@@ -14,6 +18,8 @@ from settings_catalog import ALLERGY_CATALOG_KEYS, ALLERGY_CUSTOM_TYPE
 import states
 import texts
 from tg_safe_edit import safe_delete_message
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -108,50 +114,25 @@ def _normalize_dish_query_text(text: str) -> str:
     return cleaned or t
 
 
-_DISH_NAME_SINGLE_WORD_MARKERS = {
-    "сациви",
-    "чахохбили",
-    "хачапури",
-    "хинкали",
-    "харчо",
-    "борщ",
-    "щи",
-    "солянка",
-    "окрошка",
-    "гуляш",
-    "гуляшь",
-    "плов",
-    "лазанья",
-    "карбонара",
-    "рататуй",
-    "тапас",
-    "паэлья",
-    "ризотто",
-    "гаспачо",
-    "тартар",
-    "тирамису",
-    "наполеон",
-    "профитроли",
-}
-
-
 def _looks_like_dish_query_from_products_text(text: str) -> bool:
-    """Эвристика: пользователь ввёл название блюда в поле продуктов."""
-    t = (text or "").strip().lower()
-    if not t:
-        return False
+    return looks_like_dish_query_text(text)
 
-    # Частый паттерн каноничных блюд: "мясо по-французски", "курица по-гречески", ...
-    if re.search(r"\bпо[-\s]", t):
+
+def _should_route_as_dish(text: str) -> bool:
+    if _looks_like_dish_request_text(text):
         return True
+    if looks_like_dish_query_text(text):
+        return True
+    return terms_look_like_dish_name_only(_product_terms_from_text(text))
 
-    # Отдельные "однословные" названия.
-    for w in re.split(r"[\s,]+", t):
-        w = w.strip().lower()
-        if w in _DISH_NAME_SINGLE_WORD_MARKERS:
-            return True
 
-    return False
+async def _notify_search_failure(message: Message, exc: Exception) -> None:
+    msg = str(exc).lower()
+    if "ограничения" in msg or "нарушили" in msg or "constraints" in msg:
+        body = texts.NO_RESULTS_CONSTRAINTS
+    else:
+        body = texts.AI_FAILED
+    await message.answer(body, reply_markup=keyboards.no_results_kb("products"))
 
 
 async def _classify_products_or_dish_query_with_ai(text: str) -> tuple[bool, str]:
@@ -162,6 +143,9 @@ async def _classify_products_or_dish_query_with_ai(text: str) -> tuple[bool, str
     raw = (text or "").strip()
     if not raw:
         return False, ""
+
+    if _should_route_as_dish(raw):
+        return True, _normalize_dish_query_text(raw)
 
     if not config.OPENAI_API_KEY:
         # Fallback без сети/ключа.
@@ -285,6 +269,14 @@ async def _go_choose_method(message: Message, state: FSMContext, user_text: str,
 
 
 async def _go_dish_query(message: Message, state: FSMContext, query_text: str) -> None:
+    async with search_guard.user_search_slot(message.from_user.id) as acquired:
+        if not acquired:
+            await message.answer(texts.SEARCH_IN_PROGRESS)
+            return
+        await _go_dish_query_inner(message, state, query_text)
+
+
+async def _go_dish_query_inner(message: Message, state: FSMContext, query_text: str) -> None:
     user = ensure_user(message.from_user.id)
     flow_data = await state.get_data()
     cuisine_slug = flow_data.get("products_cuisine_slug")
@@ -316,13 +308,23 @@ async def _go_dish_query(message: Message, state: FSMContext, query_text: str) -
             cuisine_slug=cuisine_slug,
             cuisine_theme=cuisine_label,
         )
-    except Exception:
+    except ValueError as exc:
+        logger.warning("dish_query constraints user=%s q=%r: %s", user.user_id, query_text, exc)
         if thinking_msg:
             await safe_delete_message(thinking_msg)
-        await message.answer(
-            texts.NO_RESULTS,
-            reply_markup=keyboards.no_results_kb("products"),
+        await _notify_search_failure(message, exc)
+        return
+    except Exception as exc:
+        logger.warning(
+            "dish_query failed user=%s q=%r: %s",
+            user.user_id,
+            query_text,
+            exc,
+            exc_info=True,
         )
+        if thinking_msg:
+            await safe_delete_message(thinking_msg)
+        await _notify_search_failure(message, exc)
         return
     if thinking_msg:
         await safe_delete_message(thinking_msg)
@@ -510,7 +512,7 @@ async def products_got_text(message: Message, state: FSMContext):
         await _go_choose_method(message, state, text, cuisine_label)
         return
 
-    if _looks_like_dish_request_text(text):
+    if _should_route_as_dish(text):
         await _go_dish_query(message, state, _normalize_dish_query_text(text))
         return
 
@@ -527,29 +529,37 @@ async def products_got_text(message: Message, state: FSMContext):
 
 @router.callback_query(states.ProductsFlow.disambiguate_input, F.data == "pr_kind:products")
 async def products_kind_products(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    text = (data.get("pending_input_text") or "").strip()
-    cuisine_label = data.get("products_cuisine_display")
-    if not text:
-        await state.set_state(states.ProductsFlow.waiting_input)
-        await render_products_waiting_screen(call.message, edit=True, cuisine_label=cuisine_label)
-        await _safe_callback_answer(call)
-        return
-    await _go_choose_method(call.message, state, text, cuisine_label)
-    await _safe_callback_answer(call)
+    async with search_guard.user_search_slot(call.from_user.id) as acquired:
+        if not acquired:
+            await search_guard.answer_busy(call)
+            return
+        await search_guard.answer_callback_safe(call)
+        await search_guard.strip_inline_keyboard(call.message)
+        data = await state.get_data()
+        text = (data.get("pending_input_text") or "").strip()
+        cuisine_label = data.get("products_cuisine_display")
+        if not text:
+            await state.set_state(states.ProductsFlow.waiting_input)
+            await render_products_waiting_screen(call.message, edit=True, cuisine_label=cuisine_label)
+            return
+        await _go_choose_method(call.message, state, text, cuisine_label)
 
 
 @router.callback_query(states.ProductsFlow.disambiguate_input, F.data == "pr_kind:dish")
 async def products_kind_dish(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    text = (data.get("pending_input_text") or "").strip()
-    if not text:
-        await state.set_state(states.ProductsFlow.waiting_input)
-        await render_products_waiting_screen(call.message, edit=True)
-        await _safe_callback_answer(call)
-        return
-    await _go_dish_query(call.message, state, text)
-    await _safe_callback_answer(call)
+    async with search_guard.user_search_slot(call.from_user.id) as acquired:
+        if not acquired:
+            await search_guard.answer_busy(call)
+            return
+        await search_guard.answer_callback_safe(call)
+        await search_guard.strip_inline_keyboard(call.message)
+        data = await state.get_data()
+        text = (data.get("pending_input_text") or "").strip()
+        if not text:
+            await state.set_state(states.ProductsFlow.waiting_input)
+            await render_products_waiting_screen(call.message, edit=True)
+            return
+        await _go_dish_query(call.message, state, text)
 
 
 @router.callback_query(F.data == "pr:back_input")
@@ -587,8 +597,13 @@ async def products_cook_method(call: CallbackQuery, state: FSMContext):
         await call.answer()
         return
 
-    await call.answer()
-    await _apply_method_and_search(call, state, raw)
+    async with search_guard.user_search_slot(call.from_user.id) as acquired:
+        if not acquired:
+            await search_guard.answer_busy(call)
+            return
+        await search_guard.answer_callback_safe(call)
+        await search_guard.strip_inline_keyboard(call.message)
+        await _apply_method_and_search(call, state, raw)
 
 
 async def _apply_method_and_search(call: CallbackQuery, state: FSMContext, method: str):
@@ -615,31 +630,63 @@ async def _apply_method_and_search(call: CallbackQuery, state: FSMContext, metho
                 except Exception:
                     pass
 
-        is_dish, dish_query = await _classify_products_or_dish_query_with_ai(text)
-        if is_dish:
+        if _should_route_as_dish(text):
             found = await recipe_openai.generate_and_persist_by_dish_name(
                 user,
-                dish_query or _normalize_dish_query_text(text),
+                _normalize_dish_query_text(text),
                 progress=_progress,
                 forced_cook_method=method,
                 cuisine_slug=cuisine_slug,
                 cuisine_theme=cuisine_label,
             )
         else:
-            found = await recipe_openai.generate_and_persist_recipes(
-                user,
-                terms,
-                method,
-                cuisine_slug=cuisine_slug,
-                cuisine_theme=cuisine_label,
-                progress=_progress,
-            )
-    except Exception:
+            is_dish, dish_query = await _classify_products_or_dish_query_with_ai(text)
+            if is_dish:
+                found = await recipe_openai.generate_and_persist_by_dish_name(
+                    user,
+                    dish_query or _normalize_dish_query_text(text),
+                    progress=_progress,
+                    forced_cook_method=method,
+                    cuisine_slug=cuisine_slug,
+                    cuisine_theme=cuisine_label,
+                )
+            else:
+                found = await recipe_openai.generate_and_persist_recipes(
+                    user,
+                    terms,
+                    method,
+                    cuisine_slug=cuisine_slug,
+                    cuisine_theme=cuisine_label,
+                    progress=_progress,
+                )
+    except ValueError as exc:
+        logger.warning(
+            "products search constraints user=%s method=%s: %s",
+            user.user_id,
+            method,
+            exc,
+        )
         if thinking_msg:
             await safe_delete_message(thinking_msg)
         await call.bot.send_message(
             call.from_user.id,
-            texts.NO_RESULTS,
+            texts.NO_RESULTS_CONSTRAINTS,
+            reply_markup=keyboards.no_results_kb("products"),
+        )
+        return
+    except Exception as exc:
+        logger.warning(
+            "products search failed user=%s method=%s: %s",
+            user.user_id,
+            method,
+            exc,
+            exc_info=True,
+        )
+        if thinking_msg:
+            await safe_delete_message(thinking_msg)
+        await call.bot.send_message(
+            call.from_user.id,
+            texts.AI_FAILED,
             reply_markup=keyboards.no_results_kb("products"),
         )
         return
@@ -677,6 +724,9 @@ async def _apply_method_and_search(call: CallbackQuery, state: FSMContext, metho
 
 @router.callback_query(F.data == "pr:more")
 async def products_show_more(call: CallbackQuery, state: FSMContext):
+    if search_guard.is_user_search_busy(call.from_user.id):
+        await search_guard.answer_busy(call)
+        return
     user = get_user(call.from_user.id)
     if not user:
         await call.answer("Ошибка", show_alert=True)

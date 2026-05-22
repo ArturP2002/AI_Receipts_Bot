@@ -270,7 +270,18 @@ scp .env botuser@СЕРВЕР_IP:/opt/ai_receipts_bot/.env
 - `OPENAI_API_KEY` — для ИИ-рецептов и картинок.
 - `BOT_USERNAME` — юзернейм бота без `@` (по умолчанию в коде есть placeholder).
 - `RECIPE_STAR_PRICE`, `SHOW_MORE_STAR_PRICE`, `SUBSCRIPTION_STAR_PRICE`, `SUBSCRIPTION_DEFAULT_DAYS`, и др. — при необходимости переопределяют значения по умолчанию.
-- `OPENAI_CHAT_MODEL`, `OPENAI_IMAGE_MODEL`, `RECIPE_IMAGES_MODE` (`sync` / `async` / `off`), `LOG_LEVEL` и т.д.
+- `OPENAI_CHAT_MODEL`, `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_FALLBACK_MODELS`, `RECIPE_IMAGES_MODE` (`sync` / `async` / `off`), `LOG_LEVEL` и т.д.
+
+**Картинки («Рецепт дня» и фото блюд):** в `.env` на сервере задайте рабочую модель, например:
+
+```bash
+OPENAI_IMAGE_MODEL=gpt-image-1
+OPENAI_IMAGE_FALLBACK_MODELS=dall-e-2,dall-e-3
+```
+
+После правки: `sudo systemctl restart ai-receipts-bot.service`. В логах не должно быть `model 'dall-e-3' does not exist` / `image generation failed`. Код сам перебирает fallback-модели, но основная в env должна быть доступна в вашем аккаунте OpenAI.
+
+Опционально `OPENAI_IMAGE_PROBE_ON_STARTUP=on` — одна тестовая генерация при старте (платно), чтобы сразу увидеть в логе рабочую модель.
 
 Минимальный рабочий набор для теста бота без Mini App: только `BOT_TOKEN`. Для полного функционала — ключ OpenAI и переменные админки выше.
 
@@ -510,6 +521,9 @@ sudo systemctl start ai-receipts-bot.service
 | Бот не стартует: нет `BOT_TOKEN` | `.env` и `EnvironmentFile` в systemd; перезапуск после правок. |
 | Две разные базы данных | `WorkingDirectory` в systemd не тот каталог — процесс создаёт `AI_Receipts_Bot.db` в другом месте. |
 | После обновления кода старые зависимости | Выполнить `pip install -r requirements.txt` в `.venv`. |
+| **Рецепт дня без фото** | `journalctl` → `image generation failed` / `model does not exist`. Поменять `OPENAI_IMAGE_MODEL` (см. §8.3), перезапуск сервиса. |
+| **Бот «молчит» ~20–30 мин** | `Failed to fetch updates`, `Connect call failed`, `Temporary failure in name resolution` — сеть/DNS VPS до `api.telegram.org`. Проверить `ping api.telegram.org`, DNS (`resolvectl status`), firewall. Обычно aiogram сам переподключается; при долгом простое — `systemctl restart ai-receipts-bot.service`. |
+| Шум в логах `GET /admin/.env` | Сканеры интернета, ответ 404 — нормально. При желании ограничить `limit_req` в nginx. |
 
 ---
 

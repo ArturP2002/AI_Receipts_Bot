@@ -318,6 +318,8 @@ _GENERIC_DISH_WORDS = frozenset(
 
 def is_query_too_vague_for_dish_search(text: str) -> bool:
     """Один короткий токен без конкретики — лучше уточнить в настройках."""
+    from data.dish_markers import DISH_NAME_SINGLE_WORD, is_known_dish_token
+
     t = _norm(text)
     if not t:
         return True
@@ -325,6 +327,8 @@ def is_query_too_vague_for_dish_search(text: str) -> bool:
     if len(words) >= 2:
         return False
     w = words[0]
+    if is_known_dish_token(w) or w in DISH_NAME_SINGLE_WORD:
+        return False
     if len(w) <= 3:
         return True
     if w in _GENERIC_DISH_WORDS:

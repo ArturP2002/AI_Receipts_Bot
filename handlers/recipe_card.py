@@ -17,6 +17,7 @@ import keyboards
 from services import limits
 from services.effective_config import get_effective_config
 from services.subscription import is_subscription_active
+from handlers import search_guard
 from tg_safe_edit import safe_delete_message
 from services.recipe_format import format_full_card, format_teaser_card
 from services.recipe_media import send_recipe_with_optional_photo
@@ -30,8 +31,15 @@ router = Router()
 
 @router.callback_query(F.data.startswith("open:"))
 async def open_recipe(call: CallbackQuery, state: FSMContext):
-    await call.answer()
     rid = int(call.data.split(":")[1])
+    uid = call.from_user.id
+    if search_guard.should_debounce_open_recipe(uid, rid):
+        await search_guard.answer_callback_safe(call)
+        return
+    if search_guard.is_user_search_busy(uid):
+        await search_guard.answer_busy(call)
+        return
+    await search_guard.answer_callback_safe(call)
     user = ensure_user(call.from_user.id)
     recipe = Recipe.get_by_id(rid)
     if recipe.ai_chat_model and not (
@@ -60,7 +68,6 @@ async def open_recipe(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     list_ctx = data.get("list_ctx", "products")
 
-    uid = call.from_user.id
     in_archive = user_has_recipe_in_archive(uid, rid)
     if show_full:
         text = format_full_card(recipe)

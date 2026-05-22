@@ -50,8 +50,15 @@ SUBSCRIPTION_POST_EXPIRY_REMIND_DAYS = max(
 # OpenAI (текст + картинки). Модели можно сменить через env — см. services/openai_ai.py
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "dall-e-3")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip() or "gpt-image-1"
 OPENAI_IMAGE_SIZE = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
+# Через запятую — запасные модели, если основная недоступна (см. лог «model does not exist»).
+_fallback_raw = os.getenv("OPENAI_IMAGE_FALLBACK_MODELS", "dall-e-2,dall-e-3").strip()
+OPENAI_IMAGE_FALLBACK_MODELS: tuple[str, ...] = tuple(
+    m.strip() for m in _fallback_raw.split(",") if m.strip()
+)
+_img_probe = os.getenv("OPENAI_IMAGE_PROBE_ON_STARTUP", "off").strip().lower()
+OPENAI_IMAGE_PROBE_ON_STARTUP = _img_probe not in ("0", "false", "no", "off")
 # Подбор по продуктам / по названию блюда — только через OpenAI (локальная база для подбора не используется).
 PRODUCTS_AI_MODE = "always"
 AI_RECIPES_PER_REQUEST = max(1, min(5, _env_int("AI_RECIPES_PER_REQUEST", 3)))

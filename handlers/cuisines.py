@@ -15,6 +15,7 @@ import keyboards
 from services import limits, recipe_openai
 import states
 import texts
+from handlers import search_guard
 from tg_safe_edit import safe_delete_message
 
 router = Router()
@@ -38,7 +39,35 @@ async def _present_cuisine_results(
     time_bucket: str | None = None,
     popular_only: bool = False,
 ) -> None:
-    await call.answer()
+    async with search_guard.user_search_slot(call.from_user.id) as acquired:
+        if not acquired:
+            await search_guard.answer_busy(call)
+            return
+        await _present_cuisine_results_inner(
+            call,
+            state,
+            user,
+            slug,
+            lab,
+            dish_type=dish_type,
+            time_bucket=time_bucket,
+            popular_only=popular_only,
+        )
+
+
+async def _present_cuisine_results_inner(
+    call: CallbackQuery,
+    state: FSMContext,
+    user,
+    slug: str,
+    lab: str,
+    *,
+    dish_type: str | None = None,
+    time_bucket: str | None = None,
+    popular_only: bool = False,
+) -> None:
+    await search_guard.answer_callback_safe(call)
+    await search_guard.strip_inline_keyboard(call.message)
     has_key = bool(config.OPENAI_API_KEY)
     if not has_key:
         await safe_delete_message(call.message)
@@ -288,6 +317,9 @@ async def list_back_cuisine(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "cu:more")
 async def cuisine_more(call: CallbackQuery, state: FSMContext):
+    if search_guard.is_user_search_busy(call.from_user.id):
+        await search_guard.answer_busy(call)
+        return
     user = get_user(call.from_user.id)
     data = await state.get_data()
     ids = data.get("result_ids") or []

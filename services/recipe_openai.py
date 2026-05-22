@@ -799,7 +799,23 @@ def _validate_recipe_item_schema(item: dict) -> list[str]:
     return errors
 
 
-def _self_check_items(raw_list: list, terms: list[str], cook_method: str) -> tuple[list[dict], list[str]]:
+def _recipe_has_user_term(ingredients: list, terms: list[str]) -> bool:
+    if not terms:
+        return True
+    for ing in ingredients:
+        if _is_ingredient_allowed(str(ing), terms):
+            return True
+    return False
+
+
+def _self_check_items(
+    raw_list: list,
+    terms: list[str],
+    cook_method: str,
+    *,
+    strict_ingredients: bool = True,
+    check_cook_method: bool = True,
+) -> tuple[list[dict], list[str]]:
     ok: list[dict] = []
     violations: list[str] = []
     for idx, item in enumerate(raw_list, start=1):
@@ -811,10 +827,14 @@ def _self_check_items(raw_list: list, terms: list[str], cook_method: str) -> tup
             violations.append(f"recipe#{idx}:" + ",".join(schema_errors))
             continue
         ingredients = item.get("ingredients") or []
-        if not all(_is_ingredient_allowed(str(ing), terms) for ing in ingredients):
-            violations.append(f"recipe#{idx}:outside_terms")
+        if strict_ingredients:
+            if not all(_is_ingredient_allowed(str(ing), terms) for ing in ingredients):
+                violations.append(f"recipe#{idx}:outside_terms")
+                continue
+        elif not _recipe_has_user_term(ingredients, terms):
+            violations.append(f"recipe#{idx}:no_user_term")
             continue
-        if not _matches_cook_method(item, cook_method):
+        if check_cook_method and not _matches_cook_method(item, cook_method):
             violations.append(f"recipe#{idx}:method_conflict")
             continue
         ok.append(item)
@@ -927,90 +947,10 @@ def _first_term_label(terms: list[str]) -> str:
     return (terms[0] if terms else "продукт").strip().capitalize()
 
 
-_DISH_NAME_SINGLE_WORD = frozenset(
-    {
-        "сациви",
-        "чахохбили",
-        "хачапури",
-        "хинкали",
-        "борщ",
-        "щи",
-        "солянка",
-        "окрошка",
-        "гуляш",
-        "гуляшь",
-        "плов",
-        "лазанья",
-        "карбонара",
-        "рататуй",
-        "тапас",
-        "паэлья",
-        "ризотто",
-        "гаспачо",
-        "тартар",
-        "тирамису",
-        "наполеон",
-        "профитроли",
-    }
-)
-
-_SINGLE_INGREDIENT_HINT = frozenset(
-    {
-        "курица",
-        "курицу",
-        "говядина",
-        "свинина",
-        "индейка",
-        "утка",
-        "баранина",
-        "рыба",
-        "лосось",
-        "треска",
-        "яйца",
-        "яйцо",
-        "рис",
-        "гречка",
-        "макароны",
-        "паста",
-        "картошка",
-        "картофель",
-        "помидоры",
-        "помидор",
-        "огурцы",
-        "лук",
-        "чеснок",
-        "сыр",
-        "творог",
-        "молоко",
-        "сливки",
-        "сметана",
-        "грибы",
-        "кабачок",
-        "баклажан",
-        "перец",
-        "морковь",
-        "капуста",
-        "фарш",
-        "тофу",
-    }
-)
-
-
 def _terms_look_like_dish_name_only(terms: list[str]) -> bool:
-    """Один токен похож на название блюда, а не на продукт в списке."""
-    if len(terms) != 1:
-        return False
-    w = terms[0].strip().lower()
-    if len(w) < 4:
-        return False
-    if w in _SINGLE_INGREDIENT_HINT:
-        return False
-    if w in _DISH_NAME_SINGLE_WORD:
-        return True
-    # Длинное слово вне списка типичных продуктов — чаще название блюда, чем ингредиент
-    if len(w) >= 10:
-        return True
-    return False
+    from data.dish_markers import terms_look_like_dish_name_only as _dish_only
+
+    return _dish_only(terms)
 
 
 def _polish_recipe_title(title: str, cook_method: str) -> str:
@@ -1931,6 +1871,7 @@ async def generate_and_persist_recipes(
     )
     final_items: list[dict] = []
     violations: list[str] = []
+    last_raw_list: list | None = None
     for attempt in range(2):
         user_prompt = base_user_prompt
         if attempt > 0 and violations:
@@ -1948,7 +1889,14 @@ async def generate_and_persist_recipes(
         if not isinstance(raw_list, list) or not raw_list:
             violations = ["empty:recipes"]
             continue
-        checked, violations = _self_check_items(raw_list, terms, cook_method)
+        last_raw_list = raw_list
+        checked, violations = _self_check_items(
+            raw_list,
+            terms,
+            cook_method,
+            strict_ingredients=(attempt == 0),
+            check_cook_method=(attempt == 0),
+        )
         checked, hard_violations = _apply_user_constraints_filter(
             checked,
             user,
@@ -1958,6 +1906,27 @@ async def generate_and_persist_recipes(
         if checked:
             final_items = checked
             break
+    if not final_items and isinstance(last_raw_list, list) and last_raw_list:
+        soft, _ = _self_check_items(
+            last_raw_list,
+            terms,
+            cook_method,
+            strict_ingredients=False,
+            check_cook_method=False,
+        )
+        soft, hard_violations = _apply_user_constraints_filter(
+            soft,
+            user,
+            force_cook_method=cook_method,
+        )
+        if soft:
+            for item in soft[:max_n]:
+                added = _added_ingredients_for_item(item, terms)
+                if added:
+                    _attach_added_ingredients_note(item, added)
+            final_items = soft[:max_n]
+        elif hard_violations:
+            raise ValueError("все recipes нарушили ограничения: " + "; ".join(hard_violations[:10]))
     if not final_items:
         if _terms_look_like_dish_name_only(terms) and config.OPENAI_API_KEY:
             return await generate_and_persist_by_dish_name(

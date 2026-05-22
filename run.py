@@ -5,7 +5,9 @@ from bot_init import dp, bot
 from bot_menu import setup_bot_menu
 from bot_secrets import validate_config
 from aiogram import Dispatcher
+import config
 from database import init_database
+from services import openai_ai
 from handlers import register_all as _register_all
 from services.subscription import process_subscription_tick
 from services.daily_recipe import process_daily_recipe_tick
@@ -43,6 +45,9 @@ async def run_bot() -> None:
     logger.info("Подключено роутеров: %s", len(dp.sub_routers))
     await setup_bot_menu(bot)
     logger.info("Меню команд и кнопка «Меню» настроены")
+
+    if config.OPENAI_API_KEY and config.OPENAI_IMAGE_PROBE_ON_STARTUP:
+        await openai_ai.probe_image_models_at_startup()
 
     asyncio.create_task(_subscription_worker())
     asyncio.create_task(_daily_recipe_worker())
