@@ -29,68 +29,93 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _recipe_needs_dish_image(recipe: Recipe) -> bool:
+    if not recipe.ai_chat_model:
+        return False
+    path = (recipe.dish_image_path or "").strip()
+    return not (path and Path(path).is_file())
+
+
 @router.callback_query(F.data.startswith("open:"))
 async def open_recipe(call: CallbackQuery, state: FSMContext):
     rid = int(call.data.split(":")[1])
     uid = call.from_user.id
-    if search_guard.should_debounce_open_recipe(uid, rid):
+
+    async with search_guard.user_open_recipe_slot(uid) as acquired:
+        if not acquired:
+            await search_guard.answer_recipe_open_busy(call)
+            return
+
         await search_guard.answer_callback_safe(call)
-        return
-    if search_guard.is_user_search_busy(uid):
-        await search_guard.answer_busy(call)
-        return
-    await search_guard.answer_callback_safe(call)
-    user = ensure_user(call.from_user.id)
-    recipe = Recipe.get_by_id(rid)
-    if recipe.ai_chat_model and not (
-        recipe.dish_image_path and Path(recipe.dish_image_path).is_file()
-    ):
-        await ensure_dish_image(recipe)
-        recipe = Recipe.get_by_id(rid)
-    show_full, is_first = limits.register_recipe_view(user, rid)
-    if is_first:
-        referrer_id = limits.try_grant_referral_bonus_on_first_recipe_open(user.user_id)
-        if referrer_id is not None:
+        await search_guard.strip_inline_keyboard(call.message)
+
+        status_msg = await call.bot.send_message(uid, texts.RECIPE_CARD_PREPARING)
+        try:
+            user = ensure_user(uid)
+            recipe = Recipe.get_by_id(rid)
+            if _recipe_needs_dish_image(recipe):
+                try:
+                    await status_msg.edit_text(texts.RECIPE_CARD_PREPARING_IMAGE)
+                except Exception:
+                    pass
+                await ensure_dish_image(recipe)
+                recipe = Recipe.get_by_id(rid)
+
+            show_full, is_first = limits.register_recipe_view(user, rid)
+            if is_first:
+                referrer_id = limits.try_grant_referral_bonus_on_first_recipe_open(user.user_id)
+                if referrer_id is not None:
+                    try:
+                        await call.bot.send_message(
+                            referrer_id,
+                            texts.REFERRAL_BONUS_GRANTED.format(
+                                bonus=get_effective_config().referral_bonus_opens
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "referral bonus notify failed referrer_id=%s: %s",
+                            referrer_id,
+                            exc,
+                        )
+
+            data = await state.get_data()
+            list_ctx = data.get("list_ctx", "products")
+            in_archive = user_has_recipe_in_archive(uid, rid)
+            if show_full:
+                text = format_full_card(recipe)
+                kb = keyboards.recipe_card_full_kb(rid, list_ctx=list_ctx, in_archive=in_archive)
+            else:
+                text = format_teaser_card(recipe) + "\n\n" + texts.PAYWALL_FOOTER
+                kb = keyboards.recipe_card_kb(
+                    rid,
+                    list_ctx=list_ctx,
+                    show_save=False,
+                    show_buy=not is_subscription_active(user),
+                )
+
+            await safe_delete_message(status_msg)
+            status_msg = None
+            await safe_delete_message(call.message)
+            await send_recipe_with_optional_photo(
+                call.bot,
+                uid,
+                dish_image_path=recipe.dish_image_path,
+                title=recipe.title,
+                short_description=recipe.short_description or "",
+                text=text,
+                reply_markup=kb,
+            )
+        except Exception as exc:
+            logger.warning("open_recipe failed user=%s rid=%s: %s", uid, rid, exc, exc_info=True)
             try:
-                await call.bot.send_message(
-                    referrer_id,
-                    texts.REFERRAL_BONUS_GRANTED.format(
-                        bonus=get_effective_config().referral_bonus_opens
-                    ),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "referral bonus notify failed referrer_id=%s: %s",
-                    referrer_id,
-                    exc,
-                )
-
-    data = await state.get_data()
-    list_ctx = data.get("list_ctx", "products")
-
-    in_archive = user_has_recipe_in_archive(uid, rid)
-    if show_full:
-        text = format_full_card(recipe)
-        kb = keyboards.recipe_card_full_kb(rid, list_ctx=list_ctx, in_archive=in_archive)
-    else:
-        text = format_teaser_card(recipe) + "\n\n" + texts.PAYWALL_FOOTER
-        kb = keyboards.recipe_card_kb(
-            rid,
-            list_ctx=list_ctx,
-            show_save=False,
-            show_buy=not is_subscription_active(user),
-        )
-
-    await safe_delete_message(call.message)
-    await send_recipe_with_optional_photo(
-        call.bot,
-        call.from_user.id,
-        dish_image_path=recipe.dish_image_path,
-        title=recipe.title,
-        short_description=recipe.short_description or "",
-        text=text,
-        reply_markup=kb,
-    )
+                await status_msg.edit_text(texts.AI_FAILED)
+            except Exception:
+                pass
+            status_msg = None
+        finally:
+            if status_msg is not None:
+                await safe_delete_message(status_msg)
 
 
 @router.callback_query(F.data.startswith("save:"))

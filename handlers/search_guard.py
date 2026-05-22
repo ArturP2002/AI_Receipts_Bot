@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -12,8 +11,7 @@ from aiogram.types import CallbackQuery, Message
 import texts
 
 _in_progress: set[int] = set()
-_last_open_recipe: dict[tuple[int, int], float] = {}
-OPEN_RECIPE_DEBOUNCE_SEC = 2.5
+_recipe_open_in_progress: set[int] = set()
 
 
 def is_user_search_busy(user_id: int) -> bool:
@@ -55,6 +53,27 @@ async def answer_busy(call: CallbackQuery) -> None:
     await answer_callback_safe(call, texts.SEARCH_IN_PROGRESS, show_alert=True)
 
 
+async def answer_recipe_open_busy(call: CallbackQuery) -> None:
+    await answer_callback_safe(call, texts.RECIPE_OPEN_IN_PROGRESS, show_alert=True)
+
+
+@asynccontextmanager
+async def user_open_recipe_slot(user_id: int) -> AsyncIterator[bool]:
+    """Блокировка на всё время открытия карточки (в т.ч. генерация фото)."""
+    if user_id in _recipe_open_in_progress:
+        yield False
+        return
+    _recipe_open_in_progress.add(user_id)
+    try:
+        yield True
+    finally:
+        _recipe_open_in_progress.discard(user_id)
+
+
+def is_user_opening_recipe(user_id: int) -> bool:
+    return user_id in _recipe_open_in_progress
+
+
 async def strip_inline_keyboard(message: Message | None) -> None:
     if message is None:
         return
@@ -64,11 +83,3 @@ async def strip_inline_keyboard(message: Message | None) -> None:
         pass
 
 
-def should_debounce_open_recipe(user_id: int, recipe_id: int) -> bool:
-    key = (user_id, recipe_id)
-    now = time.monotonic()
-    prev = _last_open_recipe.get(key, 0.0)
-    if now - prev < OPEN_RECIPE_DEBOUNCE_SEC:
-        return True
-    _last_open_recipe[key] = now
-    return False
